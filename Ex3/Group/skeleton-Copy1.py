@@ -205,20 +205,24 @@ def esvm(encs_test, encs_train, C=1000):
     # set up labels
     # TODO
 
-    def loop(i):
-        # compute SVM 
-        # and make feature transformation
-        # TODO
-        return x
+    new_encs = []
 
-    # let's do that in parallel: 
-    # if that doesn't work for you, just exchange 'parmap' with 'map'
-    # Even better: use DASK arrays instead, then everything should be
-    # parallelized
-    new_encs = list(parmap( loop, tqdm(range(len(encs_test)))))
-    new_encs = np.concatenate(new_encs, axis=0)
-    # return new encodings
-    return new_encs
+    for i, test_vec in enumerate(tqdm(encs_test)):
+        # Prepare training data for this SVM
+        X = np.vstack([test_vec, encs_train])  # Combine test vector and all train vectors
+        y = np.array([1] + [-1] * len(encs_train))  # Positive label for test_vec, negative for train
+
+        # Train SVM
+        clf = LinearSVC(C=C, class_weight='balanced', max_iter=1000)
+        clf.fit(X, y)
+
+        # Extract and normalize weight vector
+        coef = clf.coef_.flatten()
+        coef_normalized = normalize(coef.reshape(1, -1), norm='l2').flatten()
+
+        new_encs.append(coef_normalized)
+
+    return np.array(new_encs)
 
 
 def distances(encs):
@@ -281,8 +285,8 @@ if __name__ == '__main__':
     np.random.seed(42) # fix random seed
    
     # a) dictionary
-    files_train, labels_train = getFiles(args.in_train, args.suffix,
-                                         args.labels_train)
+    files_train, labels_train = getFiles(args.in_train, args.suffix, args.labels_train)
+    files_test, labels_test = getFiles(args.in_test, args.suffix, args.labels_test)
     print('#train: {}'.format(len(files_train)))
     
     if not os.path.exists('mus.pkl.gz'):
@@ -307,40 +311,48 @@ if __name__ == '__main__':
 
   
     # b) VLAD encoding
+
+    enc_train_file = 'enc_train.pkl.gz'
+    enc_test_file = 'enc_test.pkl.gz'
+    
     print("Computing VLAD for test files...")
-    files_test, labels_test = getFiles(args.in_test, args.suffix, args.labels_test)
-    print(f"#test files: {len(files_test)}")
 
     vlad_filename = 'enc_test.pkl.gz'
-    if not os.path.exists(vlad_filename) or args.overwrite:
-        enc_test = vlad(files_test, mus, powernorm=True, gmp=args.gmp, gamma=args.gamma)
-        with gzip.open(vlad_filename, 'wb') as fOut:
-            cPickle.dump(enc_test, fOut)
-        print(f"VLAD encodings saved as {vlad_filename}.")
+    if not os.path.exists(enc_train_file) or args.overwrite:
+        enc_train = vlad(files_train, mus, powernorm=True)
+        with gzip.open(enc_train_file, 'wb') as fOut:
+            cPickle.dump(enc_train, fOut)
     else:
-        with gzip.open(vlad_filename, 'rb') as f:
+        with gzip.open(enc_train_file, 'rb') as f:
+            enc_train = cPickle.load(f)
+
+    if not os.path.exists(enc_test_file) or args.overwrite:
+        enc_test = vlad(files_test, mus, powernorm=True)
+        with gzip.open(enc_test_file, 'wb') as fOut:
+            cPickle.dump(enc_test, fOut)
+    else:
+        with gzip.open(enc_test_file, 'rb') as f:
             enc_test = cPickle.load(f)
-        print("Loaded existing VLAD encodings.")
 
 
     # # cross-evaluate test encodings
     print("Evaluating VLAD encodings...")
     evaluate(enc_test, labels_test)
 
-    # # d) compute exemplar svms
-    # print('> compute VLAD for train (for E-SVM)')
-    # fname = 'enc_train_gmp{}.pkl.gz'.format(gamma) if args.gmp else 'enc_train.pkl.gz'
-    # if not os.path.exists(fname) or args.overwrite:
-    #     # TODO
-    #     with gzip.open(fname, 'wb') as fOut:
-    #         cPickle.dump(enc_train, fOut, -1)
-    # else:
-    #     with gzip.open(fname, 'rb') as f:
-    #         enc_train = cPickle.load(f)
+    # d) compute exemplar svms
+    print('> compute VLAD for train (for E-SVM)')
+    new_enc_test_file = 'new_enc_test.pkl.gz'
+    if not os.path.exists(new_enc_test_file) or args.overwrite:
+        new_enc_test = esvm(enc_test, enc_train, C=args.C)
+        with gzip.open(new_enc_test_file, 'wb') as fOut:
+            cPickle.dump(new_enc_test, fOut)
+    else:
+        with gzip.open(new_enc_test_file, 'rb') as f:
+            new_enc_test = cPickle.load(f)
 
-    # print('> esvm computation')
-    # # TODO
-
-    # # eval
-    # evaluate(enc_test, labels_test)
-    # print('> evaluate')
+    print('> esvm computation')
+    # TODO
+    evaluate(new_enc_test, labels_test)
+    # eval
+    evaluate(enc_test, labels_test)
+    print('> evaluate')
